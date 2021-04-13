@@ -2034,15 +2034,13 @@ mdb_page_malloc(MDB_txn *txn, unsigned num)
 	return ret;
 }
 /** Free a single page.
- * Saves single pages to a list, for future reuse.
  * (This is not used for multi-page overflow pages.)
  */
 static void
 mdb_page_free(MDB_env *env, MDB_page *mp)
 {
-	mp->mp_next = env->me_dpages;
+	free(mp);
 	VGMEMP_FREE(env, mp);
-	env->me_dpages = mp;
 }
 
 /** Free a dirty page */
