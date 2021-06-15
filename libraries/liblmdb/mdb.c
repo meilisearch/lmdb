@@ -2034,13 +2034,20 @@ mdb_page_malloc(MDB_txn *txn, unsigned num)
 	return ret;
 }
 /** Free a single page.
+ * Saves single pages to a list, for future reuse unless MDB_ALWAYSFREEPAGES is set.
  * (This is not used for multi-page overflow pages.)
  */
 static void
 mdb_page_free(MDB_env *env, MDB_page *mp)
 {
-	free(mp);
-	VGMEMP_FREE(env, mp);
+	if (env->me_flags & MDB_ALWAYSFREEPAGES) {
+		VGMEMP_FREE(env, mp);
+		free(mp);
+	} else {
+		mp->mp_next = env->me_dpages;
+		VGMEMP_FREE(env, mp);
+		env->me_dpages = mp;
+	}
 }
 
 /** Free a dirty page */
@@ -5519,7 +5526,7 @@ fail:
 	 */
 #define	CHANGEABLE	(MDB_NOSYNC|MDB_NOMETASYNC|MDB_MAPASYNC|MDB_NOMEMINIT)
 #define	CHANGELESS	(MDB_FIXEDMAP|MDB_NOSUBDIR|MDB_RDONLY| \
-	MDB_WRITEMAP|MDB_NOTLS|MDB_NOLOCK|MDB_NORDAHEAD|MDB_PREVSNAPSHOT)
+	MDB_WRITEMAP|MDB_NOTLS|MDB_NOLOCK|MDB_NORDAHEAD|MDB_PREVSNAPSHOT|MDB_ALWAYSFREEPAGES)
 
 #if VALID_FLAGS & PERSISTENT_FLAGS & (CHANGEABLE|CHANGELESS)
 # error "Persistent DB flags & env flags overlap, but both go in mm_flags"
