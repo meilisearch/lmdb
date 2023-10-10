@@ -5829,17 +5829,6 @@ mdb_env_close0(MDB_env *env, int excl)
 			if (excl > 0)
 				semctl(env->me_rmutex->semid, 0, IPC_RMID);
 		}
-#elif defined(MDB_ROBUST_SUPPORTED)
-		/* If we have the filelock:  If we are the
-		 * only remaining user, clean up robust
-		 * mutexes.
-		 */
-		if (excl == 0)
-			mdb_env_excl_lock(env, &excl);
-		if (excl > 0) {
-			pthread_mutex_destroy(env->me_txns->mti_rmutex);
-			pthread_mutex_destroy(env->me_txns->mti_wmutex);
-		}
 #endif
 		munmap((void *)env->me_txns, (env->me_maxreaders-1)*sizeof(MDB_reader)+sizeof(MDB_txninfo));
 	}
@@ -7951,7 +7940,7 @@ current:
 						 * Copy end of page, adjusting alignment so
 						 * compiler may copy words instead of bytes.
 						 */
-						off = (PAGEHDRSZ + data->mv_size) & -sizeof(size_t);
+						off = (PAGEHDRSZ + data->mv_size) & -(int)sizeof(size_t);
 						memcpy((size_t *)((char *)np + off),
 							(size_t *)((char *)omp + off), sz - off);
 						sz = PAGEHDRSZ;
@@ -7979,11 +7968,14 @@ current:
 			else if (!(mc->mc_flags & C_SUB))
 				memcpy(olddata.mv_data, data->mv_data, data->mv_size);
 			else {
+				if (key->mv_size != NODEKSZ(leaf))
+					goto new_ksize;
 				memcpy(NODEKEY(leaf), key->mv_data, key->mv_size);
 				goto fix_parent;
 			}
 			return MDB_SUCCESS;
 		}
+new_ksize:
 		mdb_node_del(mc, 0);
 	}
 
