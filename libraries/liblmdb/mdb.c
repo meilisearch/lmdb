@@ -3272,7 +3272,7 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		txn->mt_u.dirty_list[0].mid = 0;
 		txn->mt_spill_pgs = NULL;
 		txn->mt_next_pgno = parent->mt_next_pgno;
-		parent->mt_flags |= MDB_TXN_HAS_CHILD;
+		// parent->mt_flags |= MDB_TXN_HAS_CHILD;
 		parent->mt_child = txn;
 		txn->mt_parent = parent;
 		txn->mt_numdbs = parent->mt_numdbs;
