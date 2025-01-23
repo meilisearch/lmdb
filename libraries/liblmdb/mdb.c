@@ -137,6 +137,7 @@ static NtCloseFunc *NtClose;
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #ifdef _MSC_VER
 #include <io.h>
@@ -1302,6 +1303,8 @@ struct MDB_txn {
 	MDB_txn		*mt_parent;		/**< parent of a nested txn */
 	/** Nested txn under this txn, set together with flag #MDB_TXN_HAS_CHILD */
 	MDB_txn		*mt_child;
+	/** The count of nested RDONLY txns under this txn also named child txns */
+	atomic_uint	mt_rdonly_child_count;
 	pgno_t		mt_next_pgno;	/**< next unallocated page */
 #ifdef MDB_VL32
 	pgno_t		mt_last_pgno;	/**< last written page */
@@ -3144,6 +3147,7 @@ mdb_txn_renew0(MDB_txn *txn)
 			mdb_debug = MDB_DBG_INFO;
 #endif
 		txn->mt_child = NULL;
+		txn->mt_rdonly_child_count = 0;
 		txn->mt_loose_pgs = NULL;
 		txn->mt_loose_count = 0;
 		txn->mt_dirty_room = MDB_IDL_UM_MAX;
@@ -3212,6 +3216,7 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 	MDB_txn *txn;
 	MDB_ntxn *ntxn;
 	int rc, size, tsize;
+	int is_nested_rdonly = 0;
 
 	flags &= MDB_TXN_BEGIN_FLAGS;
 	flags |= env->me_flags & MDB_WRITEMAP;
@@ -3220,8 +3225,13 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		return EACCES;
 
 	if (parent) {
+		// We remove the RDONLY flag but still keep track of it
+		// TODO Remove this and make that better integrated
+		is_nested_rdonly = flags | MDB_RDONLY;
+		flags &= ~MDB_RDONLY;
 		/* Nested transactions: Max 1 child, write txns only, no writemap */
 		flags |= parent->mt_flags;
+		// TODO disallow when mt_rdonly_child_count > 0
 		if (flags & (MDB_RDONLY|MDB_WRITEMAP|MDB_TXN_BLOCKED)) {
 			return (parent->mt_flags & MDB_TXN_RDONLY) ? EINVAL : MDB_BAD_TXN;
 		}
@@ -3276,8 +3286,14 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		txn->mt_u.dirty_list[0].mid = 0;
 		txn->mt_spill_pgs = NULL;
 		txn->mt_next_pgno = parent->mt_next_pgno;
-		parent->mt_flags |= MDB_TXN_HAS_CHILD;
-		parent->mt_child = txn;
+		if (is_nested_rdonly != 0) {
+			parent->mt_child = NULL;
+			atomic_fetch_add(&parent->mt_rdonly_child_count, 1);
+		} else {
+			parent->mt_flags |= MDB_TXN_HAS_CHILD;
+			parent->mt_child = txn;
+			parent->mt_rdonly_child_count = 0;
+		}
 		txn->mt_parent = parent;
 		txn->mt_numdbs = parent->mt_numdbs;
 #ifdef MDB_VL32
@@ -3377,6 +3393,7 @@ static void
 mdb_txn_end(MDB_txn *txn, unsigned mode)
 {
 	MDB_env	*env = txn->mt_env;
+	int iamtheone = 0;
 #if MDB_DEBUG
 	static const char *const names[] = MDB_END_NAMES;
 #endif
@@ -3429,14 +3446,20 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			if (env->me_txns)
 				UNLOCK_MUTEX(env->me_wmutex);
 		} else {
-			txn->mt_parent->mt_child = NULL;
-			txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
-			env->me_pgstate = ((MDB_ntxn *)txn)->mnt_pgstate;
+			if (F_ISSET(txn->mt_parent->mt_flags, MDB_TXN_HAS_CHILD) ||
+				(iamtheone = atomic_fetch_sub(&txn->mt_parent->mt_rdonly_child_count, 1) == 1))
+			{
+				txn->mt_parent->mt_child = NULL;
+				txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
+				env->me_pgstate = ((MDB_ntxn *)txn)->mnt_pgstate;
+			}
 			mdb_midl_free(txn->mt_free_pgs);
 			free(txn->mt_u.dirty_list);
 		}
 
-		mdb_midl_free(pghead);
+		if (!txn->mt_parent || (txn->mt_parent && iamtheone)) {
+			mdb_midl_free(pghead);
+		}
 	}
 #ifdef MDB_VL32
 	if (!txn->mt_parent) {
@@ -3485,6 +3508,9 @@ _mdb_txn_abort(MDB_txn *txn)
 {
 	if (txn == NULL)
 		return;
+
+	// You must first abort the child before the parent
+	mdb_tassert(txn, atomic_load(&txn->mt_rdonly_child_count) == 0);
 
 	if (txn->mt_child)
 		_mdb_txn_abort(txn->mt_child);
