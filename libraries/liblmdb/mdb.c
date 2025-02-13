@@ -32,6 +32,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+#include <stdatomic.h>
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif
@@ -1299,7 +1300,7 @@ struct MDB_txn {
 	/** Nested txn under this txn, set together with flag #MDB_TXN_HAS_CHILD */
 	MDB_txn		*mt_child;
 	/** The count of nested RDONLY txns under this txn */
-	unsigned int	mt_rdonly_child_count;
+	atomic_uint	mt_rdonly_child_count;
 	pgno_t		mt_next_pgno;	/**< next unallocated page */
 #ifdef MDB_VL32
 	pgno_t		mt_last_pgno;	/**< last written page */
@@ -3283,7 +3284,7 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		txn->mt_next_pgno = parent->mt_next_pgno;
 		if (is_rdonly != 0) {
 			parent->mt_child = NULL;
-			parent->mt_rdonly_child_count += 1;
+			atomic_fetch_add(&parent->mt_rdonly_child_count, 1);
 		} else {
 			parent->mt_flags |= MDB_TXN_HAS_CHILD;
 			parent->mt_child = txn;
@@ -3440,15 +3441,15 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			if (env->me_txns)
 				UNLOCK_MUTEX(env->me_wmutex);
 		} else {
-			if (txn->mt_parent->mt_rdonly_child_count != 0) {
+			if (atomic_load(&txn->mt_parent->mt_rdonly_child_count) != 0) {
 				mdb_tassert(txn, (txn->mt_parent->mt_flags & MDB_TXN_HAS_CHILD) == 0);
-				txn->mt_parent->mt_rdonly_child_count -= 1;
+				atomic_fetch_sub(&txn->mt_parent->mt_rdonly_child_count, 1);
 			} else {
 				txn->mt_parent->mt_child = NULL;
 				txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
 			}
 
-			if (txn->mt_parent->mt_rdonly_child_count == 0) {
+			if (atomic_load(&txn->mt_parent->mt_rdonly_child_count) == 0) {
 				env->me_pgstate = ((MDB_ntxn *)txn)->mnt_pgstate;
 				mdb_midl_free(txn->mt_free_pgs);
 				free(txn->mt_u.dirty_list);
