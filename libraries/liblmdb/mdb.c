@@ -3449,11 +3449,11 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 				txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
 			}
 
-			if (atomic_load(&txn->mt_parent->mt_rdonly_child_count) == 0) {
+			// if (atomic_load(&txn->mt_parent->mt_rdonly_child_count) == 0) {
 				env->me_pgstate = ((MDB_ntxn *)txn)->mnt_pgstate;
 				mdb_midl_free(txn->mt_free_pgs);
 				free(txn->mt_u.dirty_list);
-			}
+			// }
 		}
 		mdb_midl_free(txn->mt_spill_pgs);
 
