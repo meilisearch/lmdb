@@ -3508,7 +3508,7 @@ _mdb_txn_abort(MDB_txn *txn)
 		return;
 
 	// You must first abort the child before the parent
-	mdb_tassert(txn, txn->mt_rdonly_child_count == 0);
+	mdb_tassert(txn, atomic_load(&txn->mt_rdonly_child_count) == 0);
 
 	if (txn->mt_child)
 		_mdb_txn_abort(txn->mt_child);
