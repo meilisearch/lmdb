@@ -3229,8 +3229,13 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		 * If write: Max 1 child, no writemap
 		 */
 		flags |= parent->mt_flags;
+		if (parent->mt_child && parent->mt_child->mt_flags & MDB_RDONLY && flags & MDB_RDONLY) {
+			flags &= ~MDB_TXN_BLOCKED;
+		}
 		// TODO disallow when mt_rdonly_child_count > 0
-		if ((flags & MDB_WRITEMAP && !(flags & MDB_RDONLY)) || flags & MDB_TXN_BLOCKED) {
+		if ((flags & MDB_WRITEMAP && !(flags & MDB_RDONLY))
+		|| (flags & MDB_TXN_BLOCKED && !(parent->mt_child && parent->mt_child->mt_flags & MDB_RDONLY)))
+		{
 			return (parent->mt_flags & MDB_TXN_RDONLY) ? EINVAL : MDB_BAD_TXN;
 		}
 		/* Child txns save MDB_pgstate and use own copy of cursors */
@@ -3285,14 +3290,11 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		txn->mt_u.dirty_list[0].mid = 0;
 		txn->mt_spill_pgs = NULL;
 		txn->mt_next_pgno = parent->mt_next_pgno;
+		parent->mt_flags |= MDB_TXN_HAS_CHILD;
+		parent->mt_child = txn;
 		if (flags & MDB_RDONLY) {
-			// TODO set this flag again
-			// parent->mt_flags |= MDB_TXN_HAS_CHILD;
-			parent->mt_child = NULL;
 			atomic_fetch_add(&parent->mt_rdonly_child_count, 1);
 		} else {
-			parent->mt_flags |= MDB_TXN_HAS_CHILD;
-			parent->mt_child = txn;
 			parent->mt_rdonly_child_count = 0;
 		}
 		txn->mt_parent = parent;
@@ -3459,9 +3461,7 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			free(txn->mt_u.dirty_list);
 		}
 
-		/* If you have a parent and your parent doesn't have a child
-		 * then it's a multi-nested RDONLY transaction case
-		 */
+		/* A parent and RDONLY, it's a multi-nested RDONLY transaction case */
 		if (!(txn->mt_parent && flags & MDB_RDONLY)) {
 			mdb_midl_free(pghead);
 		}
