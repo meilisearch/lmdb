@@ -3225,17 +3225,14 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 
 	if (parent) {
 		/* Nested transactions:
-		 * If RDONLY: Any number of child, writemap allowed
+		 * If RDONLY: Any number of children, writemap allowed
 		 * If write: Max 1 child, no writemap
 		 */
 		flags |= parent->mt_flags;
-		if (parent->mt_child && parent->mt_child->mt_flags & MDB_RDONLY && flags & MDB_RDONLY) {
-			flags &= ~MDB_TXN_BLOCKED;
+		if (parent->mt_child && F_ISSET(parent->mt_child->mt_flags, MDB_RDONLY) && F_ISSET(flags, MDB_RDONLY)) {
+			flags &= ~MDB_TXN_HAS_CHILD;
 		}
-		// TODO disallow when mt_rdonly_child_count > 0
-		if ((flags & MDB_WRITEMAP && !(flags & MDB_RDONLY))
-		|| (flags & MDB_TXN_BLOCKED && !(parent->mt_child && parent->mt_child->mt_flags & MDB_RDONLY)))
-		{
+		if ((F_ISSET(flags, MDB_WRITEMAP) && !F_ISSET(flags, MDB_RDONLY)) || F_ISSET(flags, MDB_TXN_BLOCKED)) {
 			return (parent->mt_flags & MDB_TXN_RDONLY) ? EINVAL : MDB_BAD_TXN;
 		}
 		/* Child txns save MDB_pgstate and use own copy of cursors */
@@ -3450,9 +3447,7 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			if (env->me_txns)
 				UNLOCK_MUTEX(env->me_wmutex);
 		} else {
-			if (F_ISSET(txn->mt_parent->mt_flags, MDB_TXN_HAS_CHILD)
-			|| atomic_fetch_sub(&txn->mt_parent->mt_rdonly_child_count, 1) == 1)
-			{
+			if (!F_ISSET(flags, MDB_RDONLY) || atomic_fetch_sub(&txn->mt_parent->mt_rdonly_child_count, 1) == 1) {
 				txn->mt_parent->mt_child = NULL;
 				txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
 				env->me_pgstate = ((MDB_ntxn *)txn)->mnt_pgstate;
