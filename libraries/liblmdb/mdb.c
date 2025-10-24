@@ -3394,7 +3394,7 @@ static void
 mdb_txn_end(MDB_txn *txn, unsigned mode)
 {
 	MDB_env	*env = txn->mt_env;
-	uint flags = txn->mt_flags;
+	unsigned int flags = txn->mt_flags;
 #if MDB_DEBUG
 	static const char *const names[] = MDB_END_NAMES;
 #endif
