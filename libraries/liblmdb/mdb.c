@@ -6508,7 +6508,7 @@ mdb_page_get(MDB_cursor *mc, pgno_t pgno, MDB_page **ret, int *lvl)
 	MDB_page *p = NULL;
 	int level;
 
-	if (! (mc->mc_flags & (C_ORIG_RDONLY|C_WRITEMAP))) {
+	if (! (( mc->mc_flags & (C_ORIG_RDONLY|C_WRITEMAP) ) && mc->mc_txn->mt_parent == NULL)) {
 		MDB_txn *tx2 = txn;
 		level = 1;
 		do {
