@@ -3289,7 +3289,7 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		txn->mt_next_pgno = parent->mt_next_pgno;
 		parent->mt_flags |= MDB_TXN_HAS_CHILD;
 		parent->mt_child = txn;
-		if (flags & MDB_RDONLY) {
+		if (F_ISSET(flags, MDB_RDONLY)) {
 			atomic_fetch_add(&parent->mt_rdonly_child_count, 1);
 		} else {
 			parent->mt_rdonly_child_count = 0;
@@ -3307,7 +3307,7 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		ntxn = (MDB_ntxn *)txn;
 		ntxn->mnt_pgstate = env->me_pgstate; /* save parent me_pghead & co */
 		/* Do not copy parent me_pghead when nested and RDONLY */
-		if (!(flags & MDB_RDONLY) && env->me_pghead) {
+		if (!F_ISSET(flags, MDB_RDONLY) && env->me_pghead) {
 			size = MDB_IDL_SIZEOF(env->me_pghead);
 			env->me_pghead = mdb_midl_alloc(env->me_pghead[0]);
 			if (env->me_pghead)
@@ -3447,6 +3447,7 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			if (env->me_txns)
 				UNLOCK_MUTEX(env->me_wmutex);
 		} else {
+			/* mark parent txn has no longer having children if this is the last nested txn */
 			if (!F_ISSET(flags, MDB_RDONLY) || atomic_fetch_sub(&txn->mt_parent->mt_rdonly_child_count, 1) == 1) {
 				txn->mt_parent->mt_child = NULL;
 				txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
@@ -3456,8 +3457,8 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			free(txn->mt_u.dirty_list);
 		}
 
-		/* A parent and RDONLY, it's a multi-nested RDONLY transaction case */
-		if (!(txn->mt_parent && flags & MDB_RDONLY)) {
+		/* no pghead was allocated for nested RDONLY transactions */
+		if (! (txn->mt_parent && F_ISSET(flags, MDB_RDONLY))) {
 			mdb_midl_free(pghead);
 		}
 	}
