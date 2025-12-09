@@ -137,7 +137,6 @@ static NtCloseFunc *NtClose;
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <stdatomic.h>
 
 #ifdef _MSC_VER
 #include <io.h>
@@ -1304,7 +1303,9 @@ struct MDB_txn {
 	/** Nested txn under this txn, set together with flag #MDB_TXN_HAS_CHILD */
 	MDB_txn		*mt_child;
 	/** The count of nested RDONLY txns under this txn also named child txns */
-	atomic_uint	mt_rdonly_child_count;
+	unsigned int	mt_rdonly_child_count;
+	/** Mutex protecting mt_rdonly_child_count */
+	pthread_mutex_t	mt_child_mutex;
 	pgno_t		mt_next_pgno;	/**< next unallocated page */
 #ifdef MDB_VL32
 	pgno_t		mt_last_pgno;	/**< last written page */
@@ -3148,6 +3149,7 @@ mdb_txn_renew0(MDB_txn *txn)
 #endif
 		txn->mt_child = NULL;
 		txn->mt_rdonly_child_count = 0;
+		pthread_mutex_init(&txn->mt_child_mutex, NULL);
 		txn->mt_loose_pgs = NULL;
 		txn->mt_loose_count = 0;
 		txn->mt_dirty_room = MDB_IDL_UM_MAX;
@@ -3290,9 +3292,13 @@ mdb_txn_begin(MDB_env *env, MDB_txn *parent, unsigned int flags, MDB_txn **ret)
 		parent->mt_flags |= MDB_TXN_HAS_CHILD;
 		parent->mt_child = txn;
 		if (F_ISSET(flags, MDB_RDONLY)) {
-			atomic_fetch_add(&parent->mt_rdonly_child_count, 1);
+			pthread_mutex_lock(&parent->mt_child_mutex);
+			parent->mt_rdonly_child_count++;
+			pthread_mutex_unlock(&parent->mt_child_mutex);
 		} else {
+			pthread_mutex_lock(&parent->mt_child_mutex);
 			parent->mt_rdonly_child_count = 0;
+			pthread_mutex_unlock(&parent->mt_child_mutex);
 		}
 		txn->mt_parent = parent;
 		txn->mt_numdbs = parent->mt_numdbs;
@@ -3448,7 +3454,14 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 				UNLOCK_MUTEX(env->me_wmutex);
 		} else {
 			/* mark parent txn has no longer having children if this is the last nested txn */
-			if (!F_ISSET(flags, MDB_RDONLY) || atomic_fetch_sub(&txn->mt_parent->mt_rdonly_child_count, 1) == 1) {
+			int last_child = 0;
+			if (F_ISSET(flags, MDB_RDONLY)) {
+				pthread_mutex_lock(&txn->mt_parent->mt_child_mutex);
+				txn->mt_parent->mt_rdonly_child_count--;
+				last_child = (txn->mt_parent->mt_rdonly_child_count == 0);
+				pthread_mutex_unlock(&txn->mt_parent->mt_child_mutex);
+			}
+			if (!F_ISSET(flags, MDB_RDONLY) || last_child) {
 				txn->mt_parent->mt_child = NULL;
 				txn->mt_parent->mt_flags &= ~MDB_TXN_HAS_CHILD;
 				env->me_pgstate = ((MDB_ntxn *)txn)->mnt_pgstate;
@@ -3487,8 +3500,10 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 			free(tl);
 	}
 #endif
-	if (mode & MDB_END_FREE)
+	if (mode & MDB_END_FREE) {
+		pthread_mutex_destroy(&txn->mt_child_mutex);
 		free(txn);
+	}
 }
 
 void
@@ -3512,7 +3527,10 @@ _mdb_txn_abort(MDB_txn *txn)
 
 	if (txn->mt_parent && txn->mt_flags & MDB_RDONLY) {
 		// You must first abort the child before the parent
-		mdb_tassert(txn, txn->mt_parent && atomic_load(&txn->mt_rdonly_child_count) == 0);
+		pthread_mutex_lock(&txn->mt_child_mutex);
+		int count = txn->mt_rdonly_child_count;
+		pthread_mutex_unlock(&txn->mt_child_mutex);
+		mdb_tassert(txn, txn->mt_parent && count == 0);
 	}
 
 	if (txn->mt_child)
