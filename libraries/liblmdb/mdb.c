@@ -3149,7 +3149,11 @@ mdb_txn_renew0(MDB_txn *txn)
 #endif
 		txn->mt_child = NULL;
 		txn->mt_rdonly_child_count = 0;
+#ifdef _WIN32
+		txn->mt_child_mutex = CreateMutex(NULL, FALSE, NULL);
+#else
 		pthread_mutex_init(&txn->mt_child_mutex, NULL);
+#endif
 		txn->mt_loose_pgs = NULL;
 		txn->mt_loose_count = 0;
 		txn->mt_dirty_room = MDB_IDL_UM_MAX;
@@ -3501,7 +3505,11 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 	}
 #endif
 	if (mode & MDB_END_FREE) {
+#ifdef _WIN32
+		CloseHandle(txn->mt_child_mutex);
+#else
 		pthread_mutex_destroy(&txn->mt_child_mutex);
+#endif
 		free(txn);
 	}
 }
