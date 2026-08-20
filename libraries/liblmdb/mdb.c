@@ -3820,6 +3820,10 @@ mdb_page_flush(MDB_txn *txn, int keep)
 #endif
 	ssize_t		wsize = 0, wres;
 	MDB_OFF_T	wpos = 0, next_pos = 1; /* impossible pos, so pos != next_pos */
+#ifdef __OpenBSD__
+	ssize_t		sync_size;
+	MDB_OFF_T	sync_pos;
+#endif
 	int			n = 0;
 
 	j = i = keep;
@@ -3899,6 +3903,10 @@ mdb_page_flush(MDB_txn *txn, int keep)
 #endif
 			) {
 			if (n) {
+#ifdef __OpenBSD__
+				sync_pos = wpos;
+				sync_size = wsize;
+#endif
 retry_write:
 				/* Write previous page(s) */
 				DPRINTF(("committing page %"Z"u", pgno));
@@ -3964,6 +3972,14 @@ bad_write:
 					}
 					return rc;
 				}
+#ifdef __OpenBSD__
+				/* Keep the read mapping coherent with pages written through the fd. */
+				if (msync((char *)env->me_map + sync_pos, sync_size, MS_INVALIDATE)) {
+					rc = ErrCode();
+					DPRINTF(("msync: %s", strerror(rc)));
+					return rc;
+				}
+#endif
 #endif /* _WIN32 */
 				n = 0;
 			}
@@ -4546,6 +4562,14 @@ fail:
 	if (mfd == env->me_mfd && MDB_FDATASYNC(env->me_mfd)) {
 		rc = ErrCode();
 		return rc;
+	}
+#endif
+#ifdef __OpenBSD__
+	ptr = (char *)mp - PAGEHDRSZ;
+	if (msync(ptr, env->me_psize, MS_INVALIDATE)) {
+		rc = ErrCode();
+		DPRINTF(("msync: %s", strerror(rc)));
+		goto fail;
 	}
 #endif
 	/* MIPS has cache coherency issues, this is a no-op everywhere else */
